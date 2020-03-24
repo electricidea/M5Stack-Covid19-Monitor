@@ -1,7 +1,7 @@
 # Covid-19 Data Monitor
 Using the M5Stack to visualize timeseries data of the Covid-19 pandemic.
 
-![M5StickC](/images/M5StickC_001.jpg)
+![M5StickC](/images/M5Stack_Covid19_monitor.jpg)
 
 Timeseries data of confirmed infections and deaths during the Covid-19 pandemic strongly illustrate the seriousness of the current situation.
 Many websites or smartphone apps are available to view and compare this data. Interfaces to current data sets are also available, which makes it possible to evaluate and display the data by yourself.
