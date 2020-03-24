@@ -8,4 +8,4 @@ Many websites or smartphone apps are available to view and compare this data. In
 I was interested in comparing the data of certain countries directly in one graph. So I wrote a software to display the data of 5 countries as combined graphs on a M5Stack.
 
 The project page on hackster.io can be found here:
-[hackster.io page](https://www.hackster.io/hague/m5stickc-textbuffer-scrolling-display-fb6428)
+[hackster.io page](https://www.hackster.io/hague/covid-19-data-monitor-dfd267)
