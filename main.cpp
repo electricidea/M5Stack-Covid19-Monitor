@@ -5,9 +5,13 @@
  * on a M5Stack (ESP32 MCU with integrated LCD)
  * 
  * Hague Nusseck @ electricidea
- * v1.3 24.March.2020
+ * v1.4 27.March.2020
  * https://github.com/electricidea/M5Stack-Covid19-Monitor
  * 
+ * Changelog:
+ * v1.3 = - first published version
+ * v1.4 = - Bugfix Screen height in graph routine
+ *        - Changed color order
  * 
  * Distributed as-is; no warranty is given.
 **************************************************************************/
@@ -40,11 +44,11 @@ int max_y = 0;
 // The first one should always be "All countries"
 String country_names[6] = {"All countries", "China", "Germany", "US", "Italy", "Spain"}; 
 // colors for the countries
-const uint32_t country_color[6] = {LIGHTGREY, RED, GREEN, 0x51D, WHITE, MAGENTA};
+const uint32_t country_color[6] = {LIGHTGREY, RED, GREEN, WHITE, MAGENTA, 0x51D};
 
 // Array field for the collected data out of the JSON file
-// collected_data[all, confirmed, deaths][country][data point]
-int collected_data[2][6][SCREEN_WIDTH]; // space for two years
+// collected_data[confirmed, deaths][country][data point]
+int collected_data[2][6][SCREEN_WIDTH];
 String data_name[] = {"confirmed", "deaths"};
 // array to count the found data for each country
 int data_count[6] = {0, 0, 0, 0, 0, 0};
@@ -567,8 +571,8 @@ void display_data_graph(int data_select){
   for(int n=1; n<6; n++){
     int x_scale = round(float(SCREEN_WIDTH) / data_count[n]);
     for(int i = 1; i < data_count[n]; i++){
-      M5.Lcd.drawLine((i-1)*x_scale, SCREEN_HEIGHT-round((float(SCREEN_HEIGHT) / max_y) * collected_data[data_select-1][n][i-1]), 
-                      i*x_scale, SCREEN_HEIGHT-round((float(SCREEN_HEIGHT) / max_y) * collected_data[data_select-1][n][i]), country_color[n]);
+      M5.Lcd.drawLine((i-1)*x_scale, (SCREEN_HEIGHT-1)-round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-1][n][i-1]), 
+                      i*x_scale, (SCREEN_HEIGHT-1)-round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-1][n][i]), country_color[n]);
     }
   }
   // draw legend
