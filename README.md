@@ -9,3 +9,6 @@ I was interested in comparing the data of certain countries directly in one grap
 
 The project page on hackster.io can be found here:
 [hackster.io page](https://www.hackster.io/hague/covid-19-data-monitor-dfd267)
+
+A video of the M5Stack Covid-19 in action can be found here:
+[youtube video](https://youtu.be/79UIikXWLLQ)
