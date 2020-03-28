@@ -5,18 +5,28 @@
  * on a M5Stack (ESP32 MCU with integrated LCD)
  * 
  * Hague Nusseck @ electricidea
- * v1.4 27.March.2020
+ * v1.6 28.March.2020
  * https://github.com/electricidea/M5Stack-Covid19-Monitor
  * 
  * Changelog:
  * v1.3 = - first published version
  * v1.4 = - Bugfix Screen height in graph routine
  *        - Changed color order
+ * v1.5 = - Store data of multiple countries (30)
+ *        - Load data after WiFi connection
+ *        - Included weekly grid lines in graph
+ *        - The entries are now editable
+ *        - Bugfix scaling x-axis in Graph
+ * v1.6 = - Added shifted graph analysis
  * 
  * Distributed as-is; no warranty is given.
 **************************************************************************/
 
 #include <Arduino.h>
+
+#include <Preferences.h>
+Preferences preferences;
+String pref_fields[] = {"country_1", "country_2", "country_3", "country_4", "country_5"};
 
 #include <M5Stack.h>
 // install the library:
@@ -32,32 +42,47 @@ WiFiClientSecure client;
 
 // Stuff for the Graphical output
 // The M5Stack screen pixel is 320x240, with the top left corner of the screen as the origin (0,0)
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
-int max_y = 0;
+#define SCREEN_WIDTH 319
+#define SCREEN_HEIGHT 239
 
 // overall maximum to calculate the percentage of processing
 #define max_number_countries 180
-// preconfigured countries
+// country sekection array
 // The names must match with the country names inside the JSON file
-// 5 countries can be configured
-// The first one should always be "All countries"
-String country_names[6] = {"All countries", "China", "Germany", "US", "Italy", "Spain"}; 
+// 5 countries can be displayed at the same time
+// The first one should always be index 0 = "All countries"
+int country_selection[6]; 
 // colors for the countries
 const uint32_t country_color[6] = {LIGHTGREY, RED, GREEN, WHITE, MAGENTA, 0x51D};
 
+// A String array to hold a set of country names
+// Rules:
+// The first entry is always for "All countries"
+// The names must match with the country names inside the JSON file
+#define n_countries 30
+String country_names[n_countries] = {"All countries", "Australia", "Austria", "Belgium", "Brazil", "Canada", "China", 
+                      "Croatia", "Finland", "France", "Germany", "Greece", "Iran", "Italy", "Japan", "Kosovo", "Mexico", 
+                      "Netherlands", "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Russia", "Spain", 
+                      "Sweden", "Switzerland", "Taiwan", "Turkey", "US"};
+
 // Array field for the collected data out of the JSON file
 // collected_data[confirmed, deaths][country][data point]
-int collected_data[2][6][SCREEN_WIDTH];
+// the array is filled with data from all countries out of
+// the country_names list
+int collected_data[2][n_countries][SCREEN_WIDTH]; 
 String data_name[] = {"confirmed", "deaths"};
 // array to count the found data for each country
-int data_count[6] = {0, 0, 0, 0, 0, 0};
+int data_count[n_countries];
 // String to hold the last date found in the JSON file
 std::string last_date = "";
 // variable to switch between the graphical views
-// 0 = Start screen and "GET DATA" Menu
-// 1 = 
+//  0 = no graphical display
+// >0 = graphical and text display
 int display_state = 0;
+// varaible to switch between the menu states
+int menu_state = 0;
+// Index if a Country name field should be edited
+int field_edit_index = 0;
 
 // buffer for formatting numbers with thousand separator
 // see function description for further  details
@@ -116,8 +141,33 @@ void ReplaceStringInPlace(std::string& subject, const std::string& search,
 void Clear_Screen();
 int process_data();
 void display_data_graph(int data_select);
+void display_data_graph_shifted(int data_select);
 void display_data_text(int data_select);
 
+//==============================================================
+// Print the list of countries that are selected to show.
+void print_list(int highlighted){
+  Clear_Screen();
+  // center aligned String output
+  M5.Lcd.setTextDatum(CC_DATUM);
+  M5.Lcd.setFreeFont(FF2);
+  M5.Lcd.drawString("Covid-19 Monitor", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/6), 1);
+  M5.Lcd.setFreeFont(FF1);
+  // Country names
+  int y_pos = (int)(M5.Lcd.height()/6)+50;
+  for(int n=1; n<6; n++){
+    M5.Lcd.setTextColor(country_color[n]);
+    // highlight a line if selected
+    if(highlighted == n){
+      M5.Lcd.fillRect(0, y_pos-10, M5.Lcd.width(), 22, 0x528A);
+    }
+    M5.Lcd.drawString(country_names[country_selection[n]].c_str(), (int)(M5.Lcd.width()/2), y_pos, 1);
+    y_pos = y_pos + 20;
+  }
+  // left aligned String output
+  M5.Lcd.setTextDatum(TL_DATUM);
+  M5.Lcd.setTextColor(WHITE);
+}
 
 //==============================================================
 // Print a small menu at the bottom of the display above the buttons
@@ -125,20 +175,29 @@ void print_menu(int menu_index){
     M5.Lcd.fillRect(0, M5.Lcd.height()-25, M5.Lcd.width(), 25, 0x7BEF);
     M5.Lcd.setCursor(0, 230);    
     M5.Lcd.setFreeFont(FF1);
+    M5.Lcd.setTextColor(WHITE);
     switch (menu_index) {
-      case 0: {    
+      case 0: { // never used 
         M5.Lcd.print("      -       -        - ");
         break;       
       }
-      case 1: {    
-        M5.Lcd.print("           GET DATA      ");
+      case 1: { // start menu
+        M5.Lcd.print("    EDIT             SHOW");
         break;
       }
-      case 2: {    
-        M5.Lcd.print("      <       -        > ");
+      case 2: { // Edit submenu for line selection
+        M5.Lcd.print("    NEXT    EDIT     DONE ");
         break;
       }
-      default: {
+      case 3: { // submenu for changing the country  
+        M5.Lcd.print("      <       OK       > ");
+        break;
+      }
+      case 4: { // menu for display the data 
+        M5.Lcd.print("      <      BACK      > ");
+        break;
+      }
+      default: { // should never been called
         M5.Lcd.print("      -       -        - ");
         break;
       }
@@ -148,9 +207,8 @@ void print_menu(int menu_index){
 void setup() {
     // initialize the M5Stack object
     M5.begin();
-
     // configure the Lcd display
-    M5.Lcd.setBrightness(100); // Brightness (0: Off - 255:Full)
+    M5.Lcd.setBrightness(10); //100 Brightness (0: Off - 255: Full)
     M5.Lcd.setTextColor(WHITE);
     M5.Lcd.setTextSize(1);
     Clear_Screen();
@@ -159,7 +217,7 @@ void setup() {
     M5.Lcd.setFreeFont(FF2);
     M5.Lcd.drawString("Covid-19 Monitor", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/2), 1);
     M5.Lcd.setFreeFont(FF1);
-    M5.Lcd.drawString("Version 1.3 | 24.03.2020", (int)(M5.Lcd.width()/2), M5.Lcd.height()-20, 1);
+    M5.Lcd.drawString("Version 1.6 | 28.03.2020", (int)(M5.Lcd.width()/2), M5.Lcd.height()-20, 1);
     // wait 5 seconds before start file action
     delay(5000);
     // configure Top-Left oriented String output
@@ -182,50 +240,18 @@ void setup() {
     M5.Lcd.println("");
     M5.Lcd.println("[OK] Connected to WiFi");
     delay(2000);
-    // ready to download and visualize the data
-    Clear_Screen();
-    M5.Lcd.setTextDatum(CC_DATUM);
-    M5.Lcd.setFreeFont(FF2);
-    M5.Lcd.drawString("Covid-19 Monitor", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/6), 1);
-    M5.Lcd.setFreeFont(FF1);
-    // Country names
-    int y_pos = (int)(M5.Lcd.height()/6)+50;
-    for(int n=1; n<6; n++){
-      M5.Lcd.drawString(country_names[n].c_str(), (int)(M5.Lcd.width()/2), y_pos, 1);
-      y_pos = y_pos + 20;
-    }
-    M5.Lcd.setTextDatum(TL_DATUM);
-    // print the "GET DATA" Menu
-    display_state = 0;
-    print_menu(1);
-}
-
-
-void loop() {
-  M5.update();  
- 
-  // prev page
-  if (M5.BtnA.wasPressed()){
-    display_state--;
-    if(display_state < 1)
-      display_state = 8;  
-    if(display_state < 3)
-      display_data_graph(display_state);
-    else
-      display_data_text(display_state);
-  }
-
-  // get data
-  if (M5.BtnB.wasPressed()){
+    // Download and parse the JSON data file
     Clear_Screen();
     // set the certificate for the https connection to github.io
     M5.Lcd.println("[OK] set certificate");
     client.setCACert(root_ca);
     // connect to the server
     M5.Lcd.println("Starting connection...");
-    if (!client.connect(data_server_name, 443))
+    if (!client.connect(data_server_name, 443)){
       M5.Lcd.println("[ERR] Connection failed!");
-    else {
+      while(true)
+        delay(100);
+    } else {
       M5.Lcd.println("[OK] Connected to server");
       delay(200);
       // Make a HTTP request:
@@ -238,21 +264,147 @@ void loop() {
       process_data();
       // close the connection to the server
       client.stop();
-      // display confirmed data
-      display_state = 1; 
-      display_data_graph(display_state);
+    }
+    // get the list of countries to be shown
+    // the values are stored in the FLASH
+    preferences.begin("country-config", false);
+    country_selection[0] = 0; // Always "All countries"
+    char Key_String[12];
+    for(int n=1; n<6; n++){
+      pref_fields[n].toCharArray(Key_String, sizeof(Key_String));
+      country_selection[n] = preferences.getUInt(Key_String,n);
+    }
+    // close the preferences
+    preferences.end();
+    // ready to edit the list or visualize the data
+    // print the start Menu
+    field_edit_index = 0;
+    print_list(field_edit_index);
+    display_state = 0;
+    menu_state = 1;
+    print_menu(menu_state);
+}
+
+
+void loop() {
+  M5.update();  
+  // left Button
+  if (M5.BtnA.wasPressed()){
+    switch (menu_state) {
+      case 1: {   // EDIT 
+        menu_state = 2;
+        field_edit_index = 1;
+        print_list(field_edit_index);
+        print_menu(menu_state);
+        break;       
+      }
+      case 2: {   //  NEXT
+        if(++field_edit_index > 5)
+            field_edit_index = 1;
+        print_list(field_edit_index);
+        print_menu(menu_state);
+        break;       
+      }
+      case 3: {   //  < (Country name selection)
+        if(--country_selection[field_edit_index] == 0)
+          country_selection[field_edit_index] = n_countries-1;
+        print_list(field_edit_index);
+        print_menu(menu_state);
+        break;       
+      }
+      case 4: {   // Prev Page
+        display_state--;
+        if(display_state < 1)
+          display_state = 10;  
+        if(display_state < 3)
+          display_data_graph(display_state);
+        else{
+          if(display_state < 5)
+            display_data_graph_shifted(display_state);
+          else
+            display_data_text(display_state);
+        }
+        break;       
+      }
     }
   }
 
-  // next page
+  // center Button
+  if (M5.BtnB.wasPressed()){
+    switch (menu_state) {
+      case 1: {   //  
+      
+        break;       
+      }
+      case 2: {   //  EDIT
+        menu_state = 3;
+        print_list(field_edit_index);
+        print_menu(menu_state);
+        break;       
+      }
+      case 3: {   //  OK
+        menu_state = 2;
+        char Key_String[12];
+        pref_fields[field_edit_index].toCharArray(Key_String, sizeof(Key_String));
+        // save selection
+        preferences.begin("country-config", false);
+        preferences.putUInt(Key_String, country_selection[field_edit_index]);
+        preferences.end();
+        print_list(field_edit_index);
+        print_menu(menu_state);
+        break;       
+      }
+      case 4: {   // Back 
+        // print the start Menu
+        display_state = 0;
+        menu_state = 1;
+        print_list(0);
+        print_menu(menu_state);
+        break;       
+      }
+    }
+  }
+
+  // right Button
   if (M5.BtnC.wasPressed()){
-    display_state++;
-    if(display_state > 8)
-      display_state = 1;  
-    if(display_state < 3)
-      display_data_graph(display_state);
-    else
-      display_data_text(display_state);
+    switch (menu_state) {
+      case 1: {   // SHOW 
+        menu_state = 4;
+        display_state = 1; 
+        display_data_graph(display_state);
+        break;       
+      }
+      case 2: {   // Done 
+        // print the start Menu
+        field_edit_index = 0;
+        display_state = 0;
+        menu_state = 1;
+        print_list(0);
+        print_menu(menu_state);
+        break;       
+      }
+      case 3: {   //  > (Country name selection)
+        if(++country_selection[field_edit_index] == n_countries)
+          country_selection[field_edit_index] = 1;
+        print_list(field_edit_index);
+        print_menu(menu_state);
+        break;       
+      }
+      case 4: {   // Next Page 
+        display_state++;
+        if(display_state > 10)
+          display_state = 1;  
+        if(display_state < 3)
+          display_data_graph(display_state);
+        else{
+          if(display_state < 5)
+            display_data_graph_shifted(display_state);
+          else
+            display_data_text(display_state);
+        }
+        break;       
+      }
+    }
   }
 }
 
@@ -425,11 +577,10 @@ int process_data(){
       break;
     }
   }
-  // A small state machine is used to find the configured countries
-  // and collect the data for these countries seperately
-  // parse_state = 0 --> looking for a configured countrie
-  // parse_state = 1, 2, 3, 4, 5 --> country found. collecting data
-  int parse_state = 0;
+  // Index of a found country section
+  // Country_index = 0 --> looking for a configured countrie
+  // Country_index > 0 --> country found. collecting data
+  int Country_index = 0;
 
   // Basic format information from the JSOM data:
   // Country START string:
@@ -477,8 +628,8 @@ int process_data(){
         collected_data[0][0][data_count[0]] = collected_data[0][0][data_count[0]]+value;
       }
       // if we are inside an configure country section
-      if(parse_state > 0){
-        collected_data[0][parse_state][data_count[parse_state]]=value;
+      if(Country_index > 0){
+        collected_data[0][Country_index][data_count[Country_index]]=value;
       }
     }
     // looking for a "deaths" data line
@@ -501,11 +652,11 @@ int process_data(){
       if(data_count[0] >= SCREEN_WIDTH)
         data_count[0] = 0;
       // if we are inside an configure country section
-      if(parse_state > 0){
-        collected_data[1][parse_state][data_count[parse_state]]=value;
-        data_count[parse_state]++;
-        if(data_count[parse_state] >= SCREEN_WIDTH)
-          data_count[parse_state] = 0;
+      if(Country_index > 0){
+        collected_data[1][Country_index][data_count[Country_index]]=value;
+        data_count[Country_index]++;
+        if(data_count[Country_index] >= SCREEN_WIDTH)
+          data_count[Country_index] = 0;
       }
     }
     // store the last "date" line to get the last actualization date
@@ -513,28 +664,19 @@ int process_data(){
     if (rcv_line.find("date", 0)  != std::string::npos){
       last_date = rcv_line;
     }
-    // simple state machine to select configured countries
-    switch (parse_state) {
-      case 0: { // search for an configured country
-        for(int n=1; n<6; n++){
-          if (rcv_line.find(country_names[n].c_str(), 0)  != std::string::npos){
-            parse_state = n;
-          }
+    // check for country out of the list,
+    // if outside an country section
+    if(Country_index == 0) {
+      for(int n=1; n<n_countries; n++){
+        if (rcv_line.find(country_names[n].c_str(), 0)  != std::string::npos){
+          Country_index = n;
         }
-        break;
       }
-      case 1: case 2: case 3: case 4: case 5: {
-        // check for END of country-section
-        if (rcv_line.find("]", 0)  != std::string::npos){
-          parse_state = 0;
-        }
-        break;
+    } else {
+      // otherwise check for END of country-section
+      if (rcv_line.find("]", 0)  != std::string::npos){
+        Country_index = 0;
       }
-      default: {
-        // nothing to do here
-        break;
-      }
-
     }
     line_count++;
     // Sometimes, we need to wait for new data from the server
@@ -556,23 +698,37 @@ int process_data(){
 //==============================================================
 // display the data as curves / graphs including a legend
 void display_data_graph(int data_select){
-  print_menu(2);
+  print_menu(4);
   delay(200);
   M5.Lcd.fillScreen(BLACK);
+  int selected_country;
   // get maximum value to scale the y-axis
-  max_y = 0;
+  int max_y = 0;
   for(int n=1; n<6; n++){
-    for(int i = 0; i < data_count[n]; i++){
-      if(collected_data[data_select-1][n][i] > max_y)
-        max_y = collected_data[data_select-1][n][i];
+    selected_country = country_selection[n];
+    for(int i = 0; i < data_count[selected_country]; i++){
+      if(collected_data[data_select-1][selected_country][i] > max_y)
+        max_y = collected_data[data_select-1][selected_country][i];
     }
+  }
+  // draw weekly grid lines
+  // start from the end and go backwards
+  int xpos = data_count[country_selection[1]]-7;
+  float x_scale = float(SCREEN_WIDTH) / data_count[1];
+  while(xpos > 0){
+    M5.Lcd.drawLine(trunc(x_scale*xpos), 0, trunc(x_scale*xpos), (SCREEN_HEIGHT-1), 0x528A);
+    xpos = xpos -7;
   }
   // draw line graph
   for(int n=1; n<6; n++){
-    int x_scale = round(float(SCREEN_WIDTH) / data_count[n]);
-    for(int i = 1; i < data_count[n]; i++){
-      M5.Lcd.drawLine((i-1)*x_scale, (SCREEN_HEIGHT-1)-round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-1][n][i-1]), 
-                      i*x_scale, (SCREEN_HEIGHT-1)-round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-1][n][i]), country_color[n]);
+    selected_country = country_selection[n];
+    x_scale = float(SCREEN_WIDTH) / data_count[selected_country];
+    for(int i = 1; i < data_count[selected_country]; i++){
+      M5.Lcd.drawLine(trunc(x_scale*(i-1)), 
+                      (SCREEN_HEIGHT-1)-(round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-1][selected_country][i-1])), 
+                      trunc(x_scale*i), 
+                      (SCREEN_HEIGHT-1)-(round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-1][selected_country][i])), 
+                      country_color[n]);
     }
   }
   // draw legend
@@ -582,8 +738,84 @@ void display_data_graph(int data_select){
   M5.Lcd.printf("\n%s (%s)\n\n", data_name[data_select-1], last_date.c_str());
   // Country name and value
   for(int n=1; n<6; n++){
+    selected_country = country_selection[n];
     M5.Lcd.setTextColor(country_color[n]);
-    M5.Lcd.printf("%s:\n%s\n", country_names[n].c_str(), formatNumber(collected_data[data_select-1][n][data_count[n]-1], format_buffer, sizeof(format_buffer)));
+    M5.Lcd.printf("%s:\n%s\n", country_names[selected_country].c_str(), 
+                               formatNumber(collected_data[data_select-1][selected_country][data_count[selected_country]-1], 
+                                            format_buffer, 
+                                            sizeof(format_buffer)));
+  }
+  M5.Lcd.setTextColor(WHITE);
+}
+
+//==============================================================
+// display the data as curves shifted in x so that all countries
+// aligned with the first increase of data
+void display_data_graph_shifted(int data_select){
+  print_menu(4);
+  delay(200);
+  M5.Lcd.fillScreen(BLACK);
+  int selected_country;
+  // get maximum value to scale the y-axis
+  int max_y = 0;
+  for(int n=1; n<6; n++){
+    selected_country = country_selection[n];
+    for(int i = 0; i < data_count[selected_country]; i++){
+      if(collected_data[data_select-3][selected_country][i] > max_y)
+        max_y = collected_data[data_select-3][selected_country][i];
+    }
+  }
+  // draw weekly grid lines
+  // start from the left and go forward
+  int xpos = 0;
+  float x_scale = float(SCREEN_WIDTH) / data_count[1];
+  while(xpos < data_count[country_selection[1]]){
+    M5.Lcd.drawLine(trunc(x_scale*xpos), 0, trunc(x_scale*xpos), (SCREEN_HEIGHT-1), 0x528A);
+    xpos = xpos +7;
+  }
+  // find the x position of first grow of data for each country
+  // threshold is a value above 2000 (confirmed) and 100 (deaths)
+  int y_threshold = 2000;
+  if(data_select-3 == 1)
+    y_threshold = 100;
+  int first_y[6];
+  int first_y_max = 0;
+  for(int n=1; n<6; n++){
+    selected_country = country_selection[n];
+    first_y[n] = 0;
+    for(int i = 0; i < data_count[selected_country]; i++){
+      if(collected_data[data_select-3][selected_country][i] < y_threshold){
+        first_y[n] = i-14; // go back 2 Weeks
+        // find the largest position
+        if(i > first_y_max)
+          first_y_max = i;
+      }
+    }
+  }
+  // draw the shifted line graph
+  for(int n=1; n<6; n++){
+    selected_country = country_selection[n];
+    x_scale = float(SCREEN_WIDTH) / data_count[selected_country];
+    for(int i = first_y[n]; i < data_count[selected_country]; i++){
+      if(i > 0){
+        M5.Lcd.drawLine(trunc(x_scale*((i-first_y[n])-1)), 
+                        (SCREEN_HEIGHT-1)-(round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-3][selected_country][i-1])), 
+                        trunc(x_scale*(i-first_y[n])), 
+                        (SCREEN_HEIGHT-1)-(round((float((SCREEN_HEIGHT-1)) / max_y) * collected_data[data_select-3][selected_country][i])), 
+                        country_color[n]);
+      }
+    }
+  }
+  // draw legend
+  M5.Lcd.setFreeFont(FF1);
+  M5.Lcd.setCursor(0, 0);
+  // headline
+  M5.Lcd.printf("\n%s (shifted)\n\n", data_name[data_select-3]);
+  // Country name
+  for(int n=1; n<6; n++){
+    selected_country = country_selection[n];
+    M5.Lcd.setTextColor(country_color[n]);
+    M5.Lcd.printf("%s\n", country_names[selected_country].c_str());
   }
   M5.Lcd.setTextColor(WHITE);
 }
@@ -592,16 +824,17 @@ void display_data_graph(int data_select){
 // display the data as summarized text output
 void display_data_text(int data_select){
   Clear_Screen();
-  print_menu(2);
+  print_menu(4);
+  int selected_country = country_selection[data_select-5];
   // draw text output
   M5.Lcd.setFreeFont(FF2);
   M5.Lcd.setCursor(0, 0);
-  M5.Lcd.setTextColor(country_color[data_select-3]);
-  M5.Lcd.printf("\n%s:\n\n", country_names[data_select-3].c_str());
+  M5.Lcd.setTextColor(country_color[data_select-5]);
+  M5.Lcd.printf("\n%s:\n\n", country_names[selected_country].c_str());
   M5.Lcd.setFreeFont(FF1);
   M5.Lcd.setTextColor(WHITE);
-  int n_confirmed = collected_data[0][data_select-3][data_count[data_select-3]-1];
-  int n_deaths = collected_data[1][data_select-3][data_count[data_select-3]-1];
+  int n_confirmed = collected_data[0][selected_country][data_count[selected_country]-1];
+  int n_deaths = collected_data[1][selected_country][data_count[selected_country]-1];
   M5.Lcd.printf("  confirmed:  %s\n", formatNumber(n_confirmed, format_buffer, sizeof(format_buffer)));
   M5.Lcd.printf("  deaths:     %s\n\n",    formatNumber(n_deaths, format_buffer, sizeof(format_buffer)));
   M5.Lcd.printf("  death rate:    %6.2f%%\n", (100.0/n_confirmed) * n_deaths);
