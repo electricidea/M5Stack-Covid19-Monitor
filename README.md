@@ -14,12 +14,12 @@ A video of the M5Stack Covid-19 in action can be found here:
 [youtube video](https://youtu.be/79UIikXWLLQ)
 
 Changelog:  
-v1.3
+v1.3  
 = first published version  
-v1.4
+v1.4  
 = Bugfix Screen height in graph routine  
 = Changed color order  
-v1.5
+v1.5  
    - Store data of multiple countries (30)  
    - Load data after WiFi connection  
    - Included weekly grid lines in graph  
