@@ -5,7 +5,7 @@
  * on a M5Stack (ESP32 MCU with integrated LCD)
  * 
  * Hague Nusseck @ electricidea
- * v1.6 28.March.2020
+ * v1.7 10.April.2020
  * https://github.com/electricidea/M5Stack-Covid19-Monitor
  * 
  * Changelog:
@@ -18,6 +18,10 @@
  *        - The entries are now editable
  *        - Bugfix scaling x-axis in Graph
  * v1.6 = - Added shifted graph analysis
+ * v1.7 = - Added Europe analysis
+ *        - add graph for "All Countries"
+ *        - Auto Display dimming function
+ *        - changed shifted threshold to 4000 (confirmed) and 500 (deaths)
  * 
  * Distributed as-is; no warranty is given.
 **************************************************************************/
@@ -46,7 +50,7 @@ WiFiClientSecure client;
 #define SCREEN_HEIGHT 239
 
 // overall maximum to calculate the percentage of processing
-#define max_number_countries 180
+#define max_number_countries 200
 // country sekection array
 // The names must match with the country names inside the JSON file
 // 5 countries can be displayed at the same time
@@ -58,12 +62,23 @@ const uint32_t country_color[6] = {LIGHTGREY, RED, GREEN, WHITE, MAGENTA, 0x51D}
 // A String array to hold a set of country names
 // Rules:
 // The first entry is always for "All countries"
+// The second entry is always for "Europe"
 // The names must match with the country names inside the JSON file
-#define n_countries 30
-String country_names[n_countries] = {"All countries", "Australia", "Austria", "Belgium", "Brazil", "Canada", "China", 
-                      "Croatia", "Finland", "France", "Germany", "Greece", "Iran", "Italy", "Japan", "Kosovo", "Mexico", 
-                      "Netherlands", "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Russia", "Spain", 
-                      "Sweden", "Switzerland", "Taiwan", "Turkey", "US"};
+#define n_countries 31
+String country_names[n_countries] = {"All countries", "Europe", "Australia", "Austria", "Brazil", "Canada", "China", 
+                      "Croatia", "Finland", "France", "Germany", "Greece", "Iran", "Italy", "Japan", "Korea, South", 
+                      "Mexico", "Netherlands", "Norway", "Poland", "Portugal", "Romania", "Russia", 
+                      "Spain", "Sweden", "Switzerland", "Taiwan", "Turkey", "United Kingdom", "US", "Vietnam"};
+
+// A String array to hold a the names of country that are part of Europe
+#define n_europe_countries 44               
+String europe_names[n_europe_countries] = {"Albania", "Andorra", "Austria", "Belarus", "Belgium", "Bulgaria", 
+                      "Bosnia and Herzegovina", "Czechia", "Croatia", "Denmark", "Estonia", "Finland", "France", "Germany", 
+                      "Georgia", "Greece", "Hungary", "Ireland", "Iceland", "Italy", "Kazakhstan", "Kosovo", "Latvia", 
+                      "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Moldova", "Monaco", "Montenegro", 
+                      "Netherlands", "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "San Marino", 
+                      "Spain", "Sweden", "Switzerland", "Turkey", "Ukraine", "United Kingdom", "Vatican City"};
+bool part_of_europe = false;
 
 // Array field for the collected data out of the JSON file
 // collected_data[confirmed, deaths][country][data point]
@@ -89,12 +104,17 @@ int field_edit_index = 0;
 char format_buffer[11];
 char thousand_separator = '.';
 
+// timer to dimm the display
+unsigned long display_dimm_millis;
+bool brightness_high = true;
+
 // WiFi network configuration:
 // A simple method to configure multiple WiFi Access Configurations:
 // Add the SSID and the password to the list.
 // IMPORTANT: keep both arrays with the same length!
 String WIFI_ssid[]     = {"Home_ssid", "Work_ssid", "Mobile_ssid", "Best-Friend_ssid"};
 String WIFI_password[] = {"Home_pwd",  "Work_pwd",  "Mobile_pwd",  "Best-Friend_pwd"};
+
 
 // the actual data are provided on this github page:
 // https://github.com/pomber/covid19
@@ -143,6 +163,246 @@ int process_data();
 void display_data_graph(int data_select);
 void display_data_graph_shifted(int data_select);
 void display_data_text(int data_select);
+void print_list(int highlighted);
+void print_menu(int menu_index);
+void set_display_brightness(int brightness);
+
+
+void setup() {
+    // initialize the M5Stack object
+    M5.begin();
+    // configure the Lcd display
+    set_display_brightness(100); //Brightness (0: Off - 255: Full)
+    M5.Lcd.setTextColor(WHITE);
+    M5.Lcd.setTextSize(1);
+    Clear_Screen();
+    // configure centered String output
+    M5.Lcd.setTextDatum(CC_DATUM);
+    M5.Lcd.setFreeFont(FF2);
+    M5.Lcd.drawString("Covid-19 Monitor", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/2), 1);
+    M5.Lcd.setFreeFont(FF1);
+    M5.Lcd.drawString("Version 1.7 | 10.04.2020", (int)(M5.Lcd.width()/2), M5.Lcd.height()-20, 1);
+    // wait 5 seconds before start file action
+    delay(5000);
+    // configure Top-Left oriented String output
+    M5.Lcd.setTextDatum(TL_DATUM);
+    // scan and display available WIFI networks
+    Clear_Screen();
+    scan_WIFI();
+    delay(1000);
+    // connect to WIFI
+    // Try all access configurations until a connection could be established.
+    int WIFI_location = 0;
+    while(WiFi.status() != WL_CONNECTED){
+      delay(1000);
+      Clear_Screen();
+      connect_Wifi(WIFI_ssid[WIFI_location].c_str(), WIFI_password[WIFI_location].c_str());
+      WIFI_location++;
+      if(WIFI_location >= (sizeof(WIFI_ssid)/sizeof(WIFI_ssid[0])))
+        WIFI_location = 0;
+    }
+    M5.Lcd.println("");
+    M5.Lcd.println("[OK] Connected to WiFi");
+    delay(2000);
+    // init the array for "All Countries" and "Europe"#
+    for(int i=0; i<SCREEN_WIDTH; i++){
+      collected_data[0][0][i] = 0; 
+      collected_data[1][0][i] = 0; 
+      collected_data[0][1][i] = 0; 
+      collected_data[1][1][i] = 0; 
+    }
+    // Download and parse the JSON data file
+    Clear_Screen();
+    // set the certificate for the https connection to github.io
+    M5.Lcd.println("[OK] set certificate");
+    client.setCACert(root_ca);
+    // connect to the server
+    M5.Lcd.println("Starting connection...");
+    if (!client.connect(data_server_name, 443)){
+      M5.Lcd.println("[ERR] Connection failed!");
+      while(true)
+        delay(100);
+    } else {
+      M5.Lcd.println("[OK] Connected to server");
+      delay(200);
+      // Make a HTTP request:
+      client.println("GET https://pomber.github.io/covid19/timeseries.json HTTP/1.0");
+      client.println("Host: pomber.github.io");
+      client.println("Connection: close");
+      client.println();
+      // get the JSON data from the github server
+      // and calculate the values
+      process_data();
+      // close the connection to the server
+      client.stop();
+    }
+    // get the list of countries to be shown
+    // the values are stored in the FLASH
+    preferences.begin("country-config", false);
+    country_selection[0] = 0; // Always "All countries"
+    char Key_String[12];
+    for(int n=1; n<6; n++){
+      pref_fields[n].toCharArray(Key_String, sizeof(Key_String));
+      country_selection[n] = preferences.getUInt(Key_String,n);
+    }
+    // close the preferences
+    preferences.end();
+    // ready to edit the list or visualize the data
+    // print the start Menu
+    field_edit_index = 0;
+    print_list(field_edit_index);
+    display_state = 0;
+    menu_state = 1;
+    print_menu(menu_state);
+    // dimm the display after 20 seconds
+    display_dimm_millis = millis() + 20000;
+}
+
+
+void loop() {
+  M5.update();  
+  // dimm the display if no button was pressed
+  if(brightness_high && millis() > display_dimm_millis){
+    M5.Lcd.setBrightness(20); //Brightness (0: Off - 255: Full)
+    brightness_high = false;
+  }
+
+
+  // left Button
+  if (M5.BtnA.wasPressed()){
+    if(!brightness_high){
+      set_display_brightness(100);
+    } else {
+      display_dimm_millis = millis() + 20000;
+      switch (menu_state) {
+        case 1: {   // EDIT 
+          menu_state = 2;
+          field_edit_index = 1;
+          print_list(field_edit_index);
+          print_menu(menu_state);
+          break;       
+        }
+        case 2: {   //  NEXT
+          if(++field_edit_index > 5)
+              field_edit_index = 1;
+          print_list(field_edit_index);
+          print_menu(menu_state);
+          break;       
+        }
+        case 3: {   //  < (Country name selection)
+          if(--country_selection[field_edit_index] < 0)
+            country_selection[field_edit_index] = n_countries-1;
+          print_list(field_edit_index);
+          print_menu(menu_state);
+          break;       
+        }
+        case 4: {   // Prev Page
+          display_state--;
+          if(display_state < 1)
+            display_state = 10;  
+          if(display_state < 3)
+            display_data_graph(display_state);
+          else{
+            if(display_state < 5)
+              display_data_graph_shifted(display_state);
+            else
+              display_data_text(display_state);
+          }
+          break;       
+        }
+      } 
+    }
+  }
+
+  // center Button
+  if (M5.BtnB.wasPressed()){
+    if(!brightness_high){
+      set_display_brightness(100);
+    } else {
+      display_dimm_millis = millis() + 20000;
+      switch (menu_state) {
+        case 1: {   //  
+        
+          break;       
+        }
+        case 2: {   //  EDIT
+          menu_state = 3;
+          print_list(field_edit_index);
+          print_menu(menu_state);
+          break;       
+        }
+        case 3: {   //  OK
+          menu_state = 2;
+          char Key_String[12];
+          pref_fields[field_edit_index].toCharArray(Key_String, sizeof(Key_String));
+          // save selection
+          preferences.begin("country-config", false);
+          preferences.putUInt(Key_String, country_selection[field_edit_index]);
+          preferences.end();
+          print_list(field_edit_index);
+          print_menu(menu_state);
+          break;       
+        }
+        case 4: {   // Back 
+          // print the start Menu
+          display_state = 0;
+          menu_state = 1;
+          print_list(0);
+          print_menu(menu_state);
+          break;       
+        }
+      }
+    }
+  }
+
+  // right Button
+  if (M5.BtnC.wasPressed()){
+    if(!brightness_high){
+      set_display_brightness(100);
+    } else {
+      display_dimm_millis = millis() + 20000;
+      switch (menu_state) {
+        case 1: {   // SHOW 
+          menu_state = 4;
+          display_state = 1; 
+          display_data_graph(display_state);
+          break;       
+        }
+        case 2: {   // Done 
+          // print the start Menu
+          field_edit_index = 0;
+          display_state = 0;
+          menu_state = 1;
+          print_list(0);
+          print_menu(menu_state);
+          break;       
+        }
+        case 3: {   //  > (Country name selection)
+          if(++country_selection[field_edit_index] == n_countries)
+            country_selection[field_edit_index] = 0;
+          print_list(field_edit_index);
+          print_menu(menu_state);
+          break;       
+        }
+        case 4: {   // Next Page 
+          display_state++;
+          if(display_state > 10)
+            display_state = 1;  
+          if(display_state < 3)
+            display_data_graph(display_state);
+          else{
+            if(display_state < 5)
+              display_data_graph_shifted(display_state);
+            else
+              display_data_text(display_state);
+          }
+          break;       
+        }
+      }
+    }
+  }
+}
+
 
 //==============================================================
 // Print the list of countries that are selected to show.
@@ -204,211 +464,16 @@ void print_menu(int menu_index){
     }
 }
 
-void setup() {
-    // initialize the M5Stack object
-    M5.begin();
-    // configure the Lcd display
-    M5.Lcd.setBrightness(10); //100 Brightness (0: Off - 255: Full)
-    M5.Lcd.setTextColor(WHITE);
-    M5.Lcd.setTextSize(1);
-    Clear_Screen();
-    // configure centered String output
-    M5.Lcd.setTextDatum(CC_DATUM);
-    M5.Lcd.setFreeFont(FF2);
-    M5.Lcd.drawString("Covid-19 Monitor", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/2), 1);
-    M5.Lcd.setFreeFont(FF1);
-    M5.Lcd.drawString("Version 1.6 | 28.03.2020", (int)(M5.Lcd.width()/2), M5.Lcd.height()-20, 1);
-    // wait 5 seconds before start file action
-    delay(5000);
-    // configure Top-Left oriented String output
-    M5.Lcd.setTextDatum(TL_DATUM);
-    // scan and display available WIFI networks
-    Clear_Screen();
-    scan_WIFI();
-    delay(1000);
-    // connect to WIFI
-    // Try all access configurations until a connection could be established.
-    int WIFI_location = 0;
-    while(WiFi.status() != WL_CONNECTED){
-      delay(1000);
-      Clear_Screen();
-      connect_Wifi(WIFI_ssid[WIFI_location].c_str(), WIFI_password[WIFI_location].c_str());
-      WIFI_location++;
-      if(WIFI_location >= (sizeof(WIFI_ssid)/sizeof(WIFI_ssid[0])))
-        WIFI_location = 0;
-    }
-    M5.Lcd.println("");
-    M5.Lcd.println("[OK] Connected to WiFi");
-    delay(2000);
-    // Download and parse the JSON data file
-    Clear_Screen();
-    // set the certificate for the https connection to github.io
-    M5.Lcd.println("[OK] set certificate");
-    client.setCACert(root_ca);
-    // connect to the server
-    M5.Lcd.println("Starting connection...");
-    if (!client.connect(data_server_name, 443)){
-      M5.Lcd.println("[ERR] Connection failed!");
-      while(true)
-        delay(100);
-    } else {
-      M5.Lcd.println("[OK] Connected to server");
-      delay(200);
-      // Make a HTTP request:
-      client.println("GET https://pomber.github.io/covid19/timeseries.json HTTP/1.0");
-      client.println("Host: pomber.github.io");
-      client.println("Connection: close");
-      client.println();
-      // get the JSON data from the github server
-      // and calculate the values
-      process_data();
-      // close the connection to the server
-      client.stop();
-    }
-    // get the list of countries to be shown
-    // the values are stored in the FLASH
-    preferences.begin("country-config", false);
-    country_selection[0] = 0; // Always "All countries"
-    char Key_String[12];
-    for(int n=1; n<6; n++){
-      pref_fields[n].toCharArray(Key_String, sizeof(Key_String));
-      country_selection[n] = preferences.getUInt(Key_String,n);
-    }
-    // close the preferences
-    preferences.end();
-    // ready to edit the list or visualize the data
-    // print the start Menu
-    field_edit_index = 0;
-    print_list(field_edit_index);
-    display_state = 0;
-    menu_state = 1;
-    print_menu(menu_state);
+
+//==============================================================
+// function to set the brightness and the dimming timer
+void set_display_brightness(int brightness){
+  M5.Lcd.setBrightness(brightness); //Brightness (0: Off - 255: Full)
+  display_dimm_millis = millis() + 20000;
+  brightness_high = true;
+  // Delay as helping function to detect a single key press of the butons
+  delay(500);
 }
-
-
-void loop() {
-  M5.update();  
-  // left Button
-  if (M5.BtnA.wasPressed()){
-    switch (menu_state) {
-      case 1: {   // EDIT 
-        menu_state = 2;
-        field_edit_index = 1;
-        print_list(field_edit_index);
-        print_menu(menu_state);
-        break;       
-      }
-      case 2: {   //  NEXT
-        if(++field_edit_index > 5)
-            field_edit_index = 1;
-        print_list(field_edit_index);
-        print_menu(menu_state);
-        break;       
-      }
-      case 3: {   //  < (Country name selection)
-        if(--country_selection[field_edit_index] == 0)
-          country_selection[field_edit_index] = n_countries-1;
-        print_list(field_edit_index);
-        print_menu(menu_state);
-        break;       
-      }
-      case 4: {   // Prev Page
-        display_state--;
-        if(display_state < 1)
-          display_state = 10;  
-        if(display_state < 3)
-          display_data_graph(display_state);
-        else{
-          if(display_state < 5)
-            display_data_graph_shifted(display_state);
-          else
-            display_data_text(display_state);
-        }
-        break;       
-      }
-    }
-  }
-
-  // center Button
-  if (M5.BtnB.wasPressed()){
-    switch (menu_state) {
-      case 1: {   //  
-      
-        break;       
-      }
-      case 2: {   //  EDIT
-        menu_state = 3;
-        print_list(field_edit_index);
-        print_menu(menu_state);
-        break;       
-      }
-      case 3: {   //  OK
-        menu_state = 2;
-        char Key_String[12];
-        pref_fields[field_edit_index].toCharArray(Key_String, sizeof(Key_String));
-        // save selection
-        preferences.begin("country-config", false);
-        preferences.putUInt(Key_String, country_selection[field_edit_index]);
-        preferences.end();
-        print_list(field_edit_index);
-        print_menu(menu_state);
-        break;       
-      }
-      case 4: {   // Back 
-        // print the start Menu
-        display_state = 0;
-        menu_state = 1;
-        print_list(0);
-        print_menu(menu_state);
-        break;       
-      }
-    }
-  }
-
-  // right Button
-  if (M5.BtnC.wasPressed()){
-    switch (menu_state) {
-      case 1: {   // SHOW 
-        menu_state = 4;
-        display_state = 1; 
-        display_data_graph(display_state);
-        break;       
-      }
-      case 2: {   // Done 
-        // print the start Menu
-        field_edit_index = 0;
-        display_state = 0;
-        menu_state = 1;
-        print_list(0);
-        print_menu(menu_state);
-        break;       
-      }
-      case 3: {   //  > (Country name selection)
-        if(++country_selection[field_edit_index] == n_countries)
-          country_selection[field_edit_index] = 1;
-        print_list(field_edit_index);
-        print_menu(menu_state);
-        break;       
-      }
-      case 4: {   // Next Page 
-        display_state++;
-        if(display_state > 10)
-          display_state = 1;  
-        if(display_state < 3)
-          display_data_graph(display_state);
-        else{
-          if(display_state < 5)
-            display_data_graph_shifted(display_state);
-          else
-            display_data_text(display_state);
-        }
-        break;       
-      }
-    }
-  }
-}
-
-
 
 //==============================================================
 // Scan for available Wifi networks
@@ -597,6 +662,7 @@ int process_data(){
     // get one line from the server data
     rcv_line = client.readStringUntil('\n').c_str();
     // looking for the "country seperator"
+    // only to display the percentage on the screen
     if (rcv_line.find(": [", 0)  != std::string::npos){ 
       // count the overall number of countries
       countries_found++;
@@ -620,16 +686,15 @@ int process_data(){
       ReplaceStringInPlace(analyze_line, ",", "");
       ReplaceStringInPlace(analyze_line, "\n", "");
       int value = atoi(analyze_line.c_str());
-      // init the value for "all countries" (index 0) with the values of the first country
-      if(countries_found == 1){
-        collected_data[0][0][data_count[0]] = value;
-      } else {
-        // Otherwise add the values of the other countries
-        collected_data[0][0][data_count[0]] = collected_data[0][0][data_count[0]]+value;
-      }
-      // if we are inside an configure country section
+      // add the value to the "All countries" Array
+      collected_data[0][0][data_count[0]] = collected_data[0][0][data_count[0]] + value;
+      // if we are inside an configure country section, set the value inside the Array
       if(Country_index > 0){
-        collected_data[0][Country_index][data_count[Country_index]]=value;
+        collected_data[0][Country_index][data_count[Country_index]] = value;
+      }
+      // if country is part of europe, add the value
+      if(part_of_europe){
+        collected_data[0][1][data_count[1]] = collected_data[0][1][data_count[1]] + value;
       }
     }
     // looking for a "deaths" data line
@@ -640,23 +705,25 @@ int process_data(){
       ReplaceStringInPlace(analyze_line, ",", "");
       ReplaceStringInPlace(analyze_line, "\n", "");
       int value = atoi(analyze_line.c_str());
-      // init the value for all countries with the values of the first country
-      if(countries_found == 1){
-        collected_data[1][0][data_count[0]] = value;
-      } else {
-        // Otherwise add the values of the other countries
-        collected_data[1][0][data_count[0]] = collected_data[1][0][data_count[0]]+value;
-      }
+      // add the value to the "All countries" Array
+      collected_data[1][0][data_count[0]] = collected_data[1][0][data_count[0]] + value;
       data_count[0]++;
       // Array can contain maximum SCREEN_WIDTH datapoints
       if(data_count[0] >= SCREEN_WIDTH)
         data_count[0] = 0;
       // if we are inside an configure country section
       if(Country_index > 0){
-        collected_data[1][Country_index][data_count[Country_index]]=value;
+        collected_data[1][Country_index][data_count[Country_index]] = value;
         data_count[Country_index]++;
         if(data_count[Country_index] >= SCREEN_WIDTH)
           data_count[Country_index] = 0;
+      }
+      // if country is part of europe, add the value to the Europe Array
+      if(part_of_europe){
+        collected_data[1][1][data_count[1]] = collected_data[1][1][data_count[1]] + value;
+        data_count[1]++;
+        if(data_count[1] >= SCREEN_WIDTH){
+          data_count[1] = 0;}
       }
     }
     // store the last "date" line to get the last actualization date
@@ -664,18 +731,30 @@ int process_data(){
     if (rcv_line.find("date", 0)  != std::string::npos){
       last_date = rcv_line;
     }
-    // check for country out of the list,
     // if outside an country section
     if(Country_index == 0) {
-      for(int n=1; n<n_countries; n++){
+      // check if country is part of the country list
+      for(int n=2; n<n_countries; n++){
         if (rcv_line.find(country_names[n].c_str(), 0)  != std::string::npos){
           Country_index = n;
+          // reset the data point counter so that it starts always
+          // with the first day
+          data_count[0] = 0;
         }
       }
-    } else {
+      // check for country as part of europe
+      for(int n=1; n<n_europe_countries; n++){
+        if (rcv_line.find(europe_names[n].c_str(), 0)  != std::string::npos){
+          part_of_europe = true;
+          data_count[1] = 0;
+        }
+      }
+    }
+    if(Country_index > 0 || part_of_europe) {
       // otherwise check for END of country-section
       if (rcv_line.find("]", 0)  != std::string::npos){
         Country_index = 0;
+        part_of_europe = false;
       }
     }
     line_count++;
@@ -774,10 +853,10 @@ void display_data_graph_shifted(int data_select){
     xpos = xpos +7;
   }
   // find the x position of first grow of data for each country
-  // threshold is a value above 2000 (confirmed) and 100 (deaths)
-  int y_threshold = 2000;
+  // threshold is a value above 4000 (confirmed) and 500 (deaths)
+  int y_threshold = 4000;
   if(data_select-3 == 1)
-    y_threshold = 100;
+    y_threshold = 500;
   int first_y[6];
   int first_y_max = 0;
   for(int n=1; n<6; n++){
