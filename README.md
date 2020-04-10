@@ -15,20 +15,20 @@ A video of the M5Stack Covid-19 in action can be found here:
 
 Changelog:  
 v1.3  
-   - first published version  
+   = first published version  
 v1.4  
-   - Bugfix Screen height in graph routine  
-   - Changed color order  
+   = Bugfix Screen height in graph routine  
+   = Changed color order  
 v1.5  
-   - Store data of multiple countries (30)  
-   - Load data after WiFi connection  
-   - Included weekly grid lines in graph  
-   - The entries are now editable  
-   - Bugfix scaling x-axis in Graph  
+   = Store data of multiple countries (30)  
+   = Load data after WiFi connection  
+   = Included weekly grid lines in graph  
+   = The entries are now editable  
+   = Bugfix scaling x-axis in Graph  
 v1.6  
-   - Added shifted graph analysis  
+   = Added shifted graph analysis  
 v1.7  
-   - Added Europe analysis  
-   - add graph for "All Countries"  
-   - Auto Display dimming function  
-   - changed shifted threshold to 4000 (confirmed) and 500 (deaths)  
+   = Added Europe analysis  
+   = add graph for "All Countries"  
+   = Auto Display dimming function  
+   = changed shifted threshold to 4000 (confirmed) and 500 (deaths)  
