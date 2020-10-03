@@ -14,6 +14,7 @@ A video of the M5Stack Covid-19 in action can be found here:
 [youtube video](https://youtu.be/79UIikXWLLQ)
 
 Since version 1.09 screenshots of the displayed images can be saved to SD card:
+
 ![M5StickC](/images/graph_1.jpg) ![M5StickC](/images/graph_2.jpg)
 
 Changelog:  
