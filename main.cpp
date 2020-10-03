@@ -5,23 +5,27 @@
  * on a M5Stack (ESP32 MCU with integrated LCD)
  * 
  * Hague Nusseck @ electricidea
- * v1.7 10.April.2020
+ * v1.09 03.October.2020
  * https://github.com/electricidea/M5Stack-Covid19-Monitor
  * 
  * Changelog:
- * v1.3 = - first published version
- * v1.4 = - Bugfix Screen height in graph routine
- *        - Changed color order
- * v1.5 = - Store data of multiple countries (30)
- *        - Load data after WiFi connection
- *        - Included weekly grid lines in graph
- *        - The entries are now editable
- *        - Bugfix scaling x-axis in Graph
- * v1.6 = - Added shifted graph analysis
- * v1.7 = - Added Europe analysis
- *        - add graph for "All Countries"
- *        - Auto Display dimming function
- *        - changed shifted threshold to 4000 (confirmed) and 500 (deaths)
+ * v1.03 = - first published version
+ * v1.04 = - Bugfix Screen height in graph routine
+ *         - Changed color order
+ * v1.05 = - Store data of multiple countries (30)
+ *         - Load data after WiFi connection
+ *         - Included weekly grid lines in graph
+ *         - The entries are now editable
+ *         - Bugfix scaling x-axis in Graph
+ * v1.06 = - Added shifted graph analysis
+ * v1.07 = - Added Europe analysis
+ *         - add graph for "All Countries"
+ *         - Auto Display dimming function
+ *         - changed shifted threshold to 4000 (confirmed) and 500 (deaths)
+ * v1.08 = - aded screen capture onto SD card
+ * v1.09 = - aded smaller demo file to https://electricidea.github.io/
+ *         - Option to load real data or short test data (36kB)
+ *         - screen capute is let or right button is pressed for 2 seconds
  * 
  * Distributed as-is; no warranty is given.
 **************************************************************************/
@@ -31,7 +35,7 @@
 #include <Preferences.h>
 Preferences preferences;
 String pref_fields[] = {"country_1", "country_2", "country_3", "country_4", "country_5"};
-
+ 
 #include <M5Stack.h>
 // install the library:
 // pio lib install "M5Stack"
@@ -108,6 +112,9 @@ char thousand_separator = '.';
 unsigned long display_dimm_millis;
 bool brightness_high = true;
 
+// Filename for Screendump to SD Card
+char Filename[24];
+
 // WiFi network configuration:
 // A simple method to configure multiple WiFi Access Configurations:
 // Add the SSID and the password to the list.
@@ -115,15 +122,24 @@ bool brightness_high = true;
 String WIFI_ssid[]     = {"Home_ssid", "Work_ssid", "Mobile_ssid", "Best-Friend_ssid"};
 String WIFI_password[] = {"Home_pwd",  "Work_pwd",  "Mobile_pwd",  "Best-Friend_pwd"};
 
-
+// uncomment this line to work with small test data (36kB)
+// instead of the large real live data
+//#define TEST_DATA
 // the actual data are provided on this github page:
 // https://github.com/pomber/covid19
 // JSON time-series of coronavirus cases (confirmed, deaths and recovered) per country
 // https://pomber.github.io/covid19/timeseries.json
-const char*  data_server_name= "pomber.github.io";  // Server URL
+
+#if defined(TEST_DATA)
+  // small partial example JSON file from January 2020:
+  // https://electricidea.github.io/M5Stack-Covid19-Monitor/20200128_timeseries.json
+  const char*  data_server_name= "electricidea.github.io";  // Server URL
+#else
+  const char*  data_server_name= "pomber.github.io";  // Server URL
+#endif
 
 // Certificate for Website:
-// https://pomber.github.io
+// https://github.io
 const char* root_ca= \
 "-----BEGIN CERTIFICATE-----\n" \
 "MIIDxTCCAq2gAwIBAgIQAqxcJmoLQJuPC3nyrkYldzANBgkqhkiG9w0BAQUFADBs\n" \
@@ -166,6 +182,7 @@ void display_data_text(int data_select);
 void print_list(int highlighted);
 void print_menu(int menu_index);
 void set_display_brightness(int brightness);
+bool M5Screen2File(fs::FS &fs, const char * path);
 
 
 void setup() {
@@ -181,28 +198,32 @@ void setup() {
     M5.Lcd.setFreeFont(FF2);
     M5.Lcd.drawString("Covid-19 Monitor", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/2), 1);
     M5.Lcd.setFreeFont(FF1);
-    M5.Lcd.drawString("Version 1.7 | 10.04.2020", (int)(M5.Lcd.width()/2), M5.Lcd.height()-20, 1);
+    M5.Lcd.drawString("Version 1.09 | 03.10.2020", (int)(M5.Lcd.width()/2), M5.Lcd.height()-20, 1);
+    // print Welcome screen over Serial connection
     // wait 5 seconds before start file action
     delay(5000);
     // configure Top-Left oriented String output
     M5.Lcd.setTextDatum(TL_DATUM);
     // scan and display available WIFI networks
     Clear_Screen();
-    scan_WIFI();
-    delay(1000);
-    // connect to WIFI
-    // Try all access configurations until a connection could be established.
-    int WIFI_location = 0;
-    while(WiFi.status() != WL_CONNECTED){
+    // ???
+    if(WiFi.status() != WL_CONNECTED){
+      scan_WIFI();
       delay(1000);
-      Clear_Screen();
-      connect_Wifi(WIFI_ssid[WIFI_location].c_str(), WIFI_password[WIFI_location].c_str());
-      WIFI_location++;
-      if(WIFI_location >= (sizeof(WIFI_ssid)/sizeof(WIFI_ssid[0])))
-        WIFI_location = 0;
+      // connect to WIFI
+      // Try all access configurations until a connection could be established.
+      int WIFI_location = 0;
+      while(WiFi.status() != WL_CONNECTED){
+        delay(1000);
+        Clear_Screen();
+        connect_Wifi(WIFI_ssid[WIFI_location].c_str(), WIFI_password[WIFI_location].c_str());
+        WIFI_location++;
+        if(WIFI_location >= (sizeof(WIFI_ssid)/sizeof(WIFI_ssid[0])))
+          WIFI_location = 0;
+      }
+      M5.Lcd.println("");
+      M5.Lcd.println("[OK] Connected to WiFi");
     }
-    M5.Lcd.println("");
-    M5.Lcd.println("[OK] Connected to WiFi");
     delay(2000);
     // init the array for "All Countries" and "Europe"#
     for(int i=0; i<SCREEN_WIDTH; i++){
@@ -226,8 +247,13 @@ void setup() {
       M5.Lcd.println("[OK] Connected to server");
       delay(200);
       // Make a HTTP request:
-      client.println("GET https://pomber.github.io/covid19/timeseries.json HTTP/1.0");
-      client.println("Host: pomber.github.io");
+      #if defined(TEST_DATA)
+        client.println("GET https://electricidea.github.io/M5Stack-Covid19-Monitor/20200128_timeseries.json HTTP/1.0");
+        client.println("Host: electricidea.github.io");
+      #else
+        client.println("GET https://pomber.github.io/covid19/timeseries.json HTTP/1.0");
+        client.println("Host: pomber.github.io");
+      #endif
       client.println("Connection: close");
       client.println();
       // get the JSON data from the github server
@@ -235,6 +261,8 @@ void setup() {
       process_data();
       // close the connection to the server
       client.stop();
+      M5.Lcd.println("[DONE]");
+      delay(2000);
     }
     // get the list of countries to be shown
     // the values are stored in the FLASH
@@ -267,7 +295,33 @@ void loop() {
     brightness_high = false;
   }
 
-
+  // if the left or right Button was pressed for 2 seconds,
+  // a screen capture is saved to SD card
+  if ((M5.BtnA.pressedFor(2000) || M5.BtnC.pressedFor(2000)) && Filename[0] == '/'){
+    if(M5Screen2File(SD, Filename)){
+      M5.Lcd.setTextColor(WHITE);
+      M5.Lcd.setTextSize(1);
+      Clear_Screen();
+      // configure centered String output
+      M5.Lcd.setTextDatum(CC_DATUM);
+      M5.Lcd.setFreeFont(FF2);
+      M5.Lcd.drawString("Screenshot saved", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/2), 1);
+      M5.Lcd.setFreeFont(FF1);
+      M5.Lcd.drawString(Filename, (int)(M5.Lcd.width()/2), M5.Lcd.height()-60, 1);
+    } else {
+      M5.Lcd.setTextColor(WHITE);
+      M5.Lcd.setTextSize(1);
+      Clear_Screen();
+      // configure centered String output
+      M5.Lcd.setTextDatum(CC_DATUM);
+      M5.Lcd.setFreeFont(FF1);
+      M5.Lcd.drawString("Unable to save Screenshot", (int)(M5.Lcd.width()/2), (int)(M5.Lcd.height()/2), 1);
+    }
+    // To prevent another screen dump if the Button is still hold down
+    // next screendump only if a Filename is set
+    Filename[0] = ' ';
+  }
+  
   // left Button
   if (M5.BtnA.wasPressed()){
     if(!brightness_high){
@@ -661,6 +715,7 @@ int process_data(){
   while (client.available()) {
     // get one line from the server data
     rcv_line = client.readStringUntil('\n').c_str();
+
     // looking for the "country seperator"
     // only to display the percentage on the screen
     if (rcv_line.find(": [", 0)  != std::string::npos){ 
@@ -825,6 +880,8 @@ void display_data_graph(int data_select){
                                             sizeof(format_buffer)));
   }
   M5.Lcd.setTextColor(WHITE);
+  // Filename for Screen-dump to SD Card
+  snprintf(Filename, sizeof(Filename), "/graph_%i.ppm",data_select);
 }
 
 //==============================================================
@@ -897,6 +954,8 @@ void display_data_graph_shifted(int data_select){
     M5.Lcd.printf("%s\n", country_names[selected_country].c_str());
   }
   M5.Lcd.setTextColor(WHITE);
+  // Filename for Screen-dump to SD Card
+  snprintf(Filename, sizeof(Filename), "/graph_shifted_%i.ppm",data_select);
 }
 
 //==============================================================
@@ -917,4 +976,38 @@ void display_data_text(int data_select){
   M5.Lcd.printf("  confirmed:  %s\n", formatNumber(n_confirmed, format_buffer, sizeof(format_buffer)));
   M5.Lcd.printf("  deaths:     %s\n\n",    formatNumber(n_deaths, format_buffer, sizeof(format_buffer)));
   M5.Lcd.printf("  death rate:    %6.2f%%\n", (100.0/n_confirmed) * n_deaths);
+  // Filename for Screen-dump to SD Card
+  snprintf(Filename, sizeof(Filename), "/text_%i.ppm",data_select);
+}
+
+//==============================================================
+// Dump the screen to a File
+// Image file format: .ppm
+// example for screen capture onto SD-Card: 
+//    M5Screen2File(SD, "/screen.ppm");
+bool M5Screen2File(fs::FS &fs, const char * path){
+  // Open file for writing
+  // The existing image file will be replaced
+  File file = fs.open(path, FILE_WRITE);
+  if(file){
+    // M5Stack:  TFT_WIDTH = 240 / TFT_HEIGHT = 320
+    // M5StickC: TFT_WIDTH =  80 / TFT_HEIGHT = 160
+    // write PPM file header
+    file.printf("P6\n%d %d\n255\n", TFT_HEIGHT, TFT_WIDTH);
+    // To keep the required memory low, the image is captured line by line
+    // M5Stack: 1 line * 320 pixel * 3 color bytes = 960 bytes.
+    static unsigned char line_data[TFT_HEIGHT*3];
+    // The function readRectRGB reads a screen area and returns the RGB 8 bit colour values of each pixel
+    // The data buffer must be at least w * h * 3 bytes
+    // readRectRGB(int32_t x0, int32_t y0, int32_t w, int32_t h, uint8_t *data);
+    for(int y = 0; y < TFT_WIDTH; y++){
+      // get the screen content line by line
+      M5.Lcd.readRectRGB(0, y, TFT_HEIGHT, 1, line_data);
+      // write the line to the file
+      file.write(line_data, TFT_HEIGHT*3);
+    }
+    file.close();
+    return true;
+  } else
+    return false;
 }
